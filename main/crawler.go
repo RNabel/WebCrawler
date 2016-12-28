@@ -311,12 +311,14 @@ func main() {
 	case len(os.Args) == 1:
 		fmt.Printf("usage: %s <root page> <outputfilename?> <maxworkers?>", os.Args[0])
 		os.Exit(1)
-	case len(os.Args) > 1:
-		startPage = os.Args[1]
-	case len(os.Args) > 2:
-		ofn = os.Args[2]
 	case len(os.Args) > 3:
 		mw, _ = strconv.Atoi(os.Args[3])
+		fallthrough
+	case len(os.Args) > 2:
+		ofn = os.Args[2]
+		fallthrough
+	case len(os.Args) > 1:
+		startPage = os.Args[1]
 	}
 
 	u, _ := url.Parse(startPage)
