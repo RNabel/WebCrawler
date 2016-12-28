@@ -16,6 +16,7 @@ import (
 	"sync"
 	"strconv"
 	"encoding/json"
+	"log"
 )
 
 // JobQueue wraps a channel with a sync.WaitGroup, which allows the main thread to wait until all
@@ -58,6 +59,7 @@ var (
 	currentJobs = NewJobQueue(MaxJobs)
 
 	output *json.Encoder
+	outputLock = make(chan bool, 1)
 
 	Domain string
 	crawledPages = 1
@@ -199,7 +201,14 @@ func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 	a := setToArr(assets)
 
 	r := PageRecord{Link: link, Links: l, Assets:a}
-	output.Encode(r)
+
+	<- outputLock // Acquire lock.
+	e := output.Encode(r)
+	if e != nil {
+		log.Fatal(e)
+		fmt.Println("Error ocurred.")
+	}
+	outputLock <- true // Release lock.
 
 	fmt.Printf("\r%d / %d crawled. ", crawledPages, totalPages)
 	crawledPages++
@@ -336,8 +345,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Make link set lock available.
+	// Make link set lock and output lock available.
 	visitedLinksLock <- true
+	outputLock <- true
+
 	fmt.Println("Crawling...")
 	// Push start page into the downloadLinks channel.
 	currentJobs.Add(&DownloadJob{link: startPage})
