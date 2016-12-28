@@ -31,7 +31,7 @@ func NewJobQueue(maxJobs int) JobQueue {
 }
 
 func (jq *JobQueue) Add(job Job) {
-	if len(jq.jobQueue) < MaxJobs {
+	if len(jq.jobQueue) < cap(jq.jobQueue) {
 		jq.jobGroup.Add(1)
 		jq.jobQueue <- job
 	}
