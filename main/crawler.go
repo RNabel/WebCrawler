@@ -32,8 +32,10 @@ func NewJobQueue(maxJobs int) JobQueue {
 }
 
 func (jq *JobQueue) Add(job Job) {
-	jq.jobGroup.Add(1)
-	jq.jobQueue <- job
+	if len(jq.jobQueue) < MaxJobs {
+		jq.jobGroup.Add(1)
+		jq.jobQueue <- job
+	}
 }
 
 func (jq *JobQueue) Done() {
@@ -56,7 +58,7 @@ var (
 	MaxJobs = 10000
 	OutpufFileName = "sitemap.txt"
 
-	currentJobs = NewJobQueue(MaxJobs)
+	currentJobs JobQueue
 
 	output *json.Encoder
 	outputLock = make(chan bool, 1)
@@ -194,8 +196,8 @@ func (j *QueueLinksJob) Start() {
 }
 
 type PageRecord struct {
-	Link string
-	Links []string
+	Link   string
+	Links  []string
 	Assets []string
 }
 
@@ -205,7 +207,7 @@ func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 
 	r := PageRecord{Link: link, Links: l, Assets:a}
 
-	<- outputLock // Acquire lock.
+	<-outputLock // Acquire lock.
 	e := output.Encode(r)
 	if e != nil {
 		log.Fatal(e)
@@ -213,7 +215,7 @@ func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 	}
 	outputLock <- true // Release lock.
 
-	fmt.Printf("\r%d / %d crawled. ", crawledPages, totalPages, len(currentJobs.jobQueue))
+	fmt.Printf("\r%d / %d crawled. ", crawledPages, totalPages)
 	crawledPages++
 }
 
@@ -317,12 +319,16 @@ func main() {
 	var startPage string
 	ofn := OutpufFileName
 	mw := MaxWorkers
+	mj := MaxJobs
 
 	// Read in program arguments and catch possible errors.
 	switch {
 	case len(os.Args) == 1:
-		fmt.Printf("usage: %s <root page> <outputfilename?> <maxworkers?>", os.Args[0])
+		fmt.Printf("usage: %s <root page> <outputfilename?> <maxworkers?> <maxjobs?>", os.Args[0])
 		os.Exit(1)
+	case len(os.Args) > 4:
+		mj, _ = strconv.Atoi(os.Args[4])
+		fallthrough
 	case len(os.Args) > 3:
 		mw, _ = strconv.Atoi(os.Args[3])
 		fallthrough
@@ -333,8 +339,15 @@ func main() {
 		startPage = os.Args[1]
 	}
 
-	u, _ := url.Parse(startPage)
+	u, e := url.Parse(startPage)
+	if e != nil {
+		fmt.Println("The entered start page is not a valid URL.")
+		os.Exit(1)
+	}
 	Domain = u.Host
+
+	// Set up job queue.
+	currentJobs = NewJobQueue(mj)
 
 	// Set up and start dispatcher.
 	d := NewDispatcher(mw, currentJobs)
