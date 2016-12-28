@@ -168,6 +168,9 @@ func processLink(href string, context string) string {
 	// Strip fragments.
 	uMain.Fragment = ""
 
+	// Strip query.
+	uMain.RawQuery = ""
+
 	return uMain.String()
 }
 
@@ -210,7 +213,7 @@ func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 	}
 	outputLock <- true // Release lock.
 
-	fmt.Printf("\r%d / %d crawled. ", crawledPages, totalPages)
+	fmt.Printf("\r%d / %d crawled. ", crawledPages, totalPages, len(currentJobs.jobQueue))
 	crawledPages++
 }
 
