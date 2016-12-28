@@ -1,6 +1,8 @@
-// TODO add header.
+// Simple Web crawler written in golang, see README for running instructions.
 // Job/Worker/Dispatcher pattern adapted from:
 // 	http://marcio.io/2015/07/handling-1-million-requests-per-minute-with-golang/
+// Web site parsing adapted from:
+// 	https://schier.co/blog/2015/04/26/a-simple-web-scraper-in-go.html
 package main
 
 import (
@@ -12,31 +14,48 @@ import (
 	"net/url"
 	"io"
 	"sync"
+	"strconv"
 )
 
-// TYPE DEFINITIONS.
-// Create a simple string set. Adapted from:
-// 	http://softwareengineering.stackexchange.com/questions/177428/sets-data-structure-in-golang
-type StringSet struct {
-	set map[string]bool
+// JobQueue wraps a channel with a sync.WaitGroup, which allows the main thread to wait until all
+// 	jobs have been processed, even if total numer of jobs is not known.
+type JobQueue struct {
+	jobGroup sync.WaitGroup
+	jobQueue chan Job
 }
 
-type ResponseData struct {
-	data io.Reader
-	url  string
+func NewJobQueue(maxJobs int) JobQueue {
+	jq := make(chan Job, maxJobs)
+	return JobQueue{jobQueue: jq}
+}
+
+func (jq *JobQueue) Add(job Job) {
+	jq.jobGroup.Add(1)
+	jq.jobQueue <- job
+}
+
+func (jq *JobQueue) Done() {
+	jq.jobGroup.Done()
+}
+
+func (jq *JobQueue) Wait() {
+	jq.jobGroup.Wait()
 }
 
 // GLOBAL VARS.
 // ============
 var (
 	// Set up visited sites map and lock.
-	VisitedLinks = StringSet{set:make(map[string]bool)}
+	VisitedLinks = make(map[string]bool)
 	VisitedLinksLock = make(chan bool, 1)
+
+	// Setting defaults.
 	MaxWorkers = 10
 	MaxJobs = 10000
-	JobQueue = make(chan Job, MaxJobs)
+	OutpufFileName = "sitemap.txt"
+
+	CurrentJobs = NewJobQueue(MaxJobs)
 	Out *os.File
-	JobGroup sync.WaitGroup
 )
 
 // JOB DEFINITIONS.
@@ -47,43 +66,30 @@ type Job interface {
 
 type DownloadJob struct {
 	link     string
-	jobQueue chan Job
 }
 
 type LinkExtractionJob struct {
-	contents ResponseData
-	jobQueue chan Job
+	data io.Reader
+	url  string
 }
 
 type QueueLinksJob struct {
 	link     string
-	jobQueue chan Job
 }
 
 func (j *DownloadJob) Start() {
-	// Get next link from link channel.
-	link := j.link
-
 	// Download page and add output to outChan.
 	//fmt.Printf("Downloading: %s\n", link)
-	response, err := http.Get(link)
+	response, err := http.Get(j.link)
 	if err == nil {
-		JobGroup.Add(1)
-		JobQueue <- &LinkExtractionJob{
-			ResponseData{data:response.Body, url:link},
-			JobQueue,
-		}
+		CurrentJobs.Add(&LinkExtractionJob{data:response.Body, url:j.link})
 	}
-	fmt.Println("Finished DownloadJob, link: " + link)
-	JobGroup.Done()
+	fmt.Println("Finished DownloadJob, link: " + j.link)
+	CurrentJobs.Done()
 }
 
-// Adapted from https://schier.co/blog/2015/04/26/a-simple-web-scraper-in-go.html
 func (j *LinkExtractionJob) Start() {
-	rd := j.contents
-	link := rd.url
-
-	tokenizer := html.NewTokenizer(rd.data)
+	tokenizer := html.NewTokenizer(j.data)
 	cont := true
 	for cont {
 		nextToken := tokenizer.Next()
@@ -99,22 +105,21 @@ func (j *LinkExtractionJob) Start() {
 				href := handleAnchorToken(token)
 				if href != "" {
 					if !strings.HasPrefix(href, "http") {
-						href = handleLocalPaths(href, link)
+						href = handleLocalPaths(href, j.url)
 					}
 					// Check whether anchor had anchor href.
 					//fmt.Println("Sending " + href + " to be queued.")
-					JobGroup.Add(1)
-					JobQueue <- &QueueLinksJob{link:href}
+					CurrentJobs.Add(&QueueLinksJob{link:href})
 					//fmt.Printf("%s queued, q length: %d\n", href, len(JobQueue))
 				}
 			}
 		}
 	}
-	fmt.Println("Finished LinkExtractionJob: " + rd.url)
-	JobGroup.Done()
+	fmt.Println("Finished LinkExtractionJob: " + j.url)
+	CurrentJobs.Done()
 }
 
-// Helper for extractLinks.
+// Helper for LinkExtractionJob.
 func handleAnchorToken(token html.Token) string {
 	for _, a := range token.Attr {
 		if a.Key == "href" {
@@ -139,23 +144,22 @@ func (j *QueueLinksJob) Start() {
 	<-VisitedLinksLock // Acquire lock.
 
 	//fmt.Println("queueLinks acquired lock")
-	_, found := VisitedLinks.set[j.link]
+	_, found := VisitedLinks[j.link]
 	if !found && strings.HasPrefix(j.link, "http://tomblomfield.com/") {
 		// Add link to visitedLinks set.
-		VisitedLinks.set[j.link] = true
+		VisitedLinks[j.link] = true
 		Out.WriteString(j.link + "\n") // Add the current link to the output file.
 		// Crawl link.
 		//fmt.Printf("Before Added: %s, queue length: %d \n", j.link, len(JobQueue))
 		//fmt.Printf("QueueLinksJob, queue size: %d", len(JobQueue))
-		JobGroup.Add(1)
-		JobQueue <- &DownloadJob{link:j.link, jobQueue:JobQueue} // Create new download job.
+		CurrentJobs.Add(&DownloadJob{link:j.link}) // Create new download job.
 	} else {
 		//fmt.Println("Rejected: " + currentLink)
 	}
 
 	VisitedLinksLock <- true // Release lock.
 	fmt.Println("Finished QueueLinksJob")
-	JobGroup.Done()
+	CurrentJobs.Done()
 }
 
 // WORKER.
@@ -203,12 +207,12 @@ func (w *Worker) Stop() {
 // DISPATCHER.
 // ===========
 type Dispatcher struct {
-	jobQueue   chan Job
+	jobQueue   JobQueue
 	workerPool chan chan Job
 	numWorkers int
 }
 
-func NewDispatcher(maxWorkers int, jobQueue chan Job) *Dispatcher {
+func NewDispatcher(maxWorkers int, jobQueue JobQueue) *Dispatcher {
 	// Dispatcher constructor.
 	// Create new worker pool.
 	pool := make(chan chan Job, maxWorkers)
@@ -233,7 +237,7 @@ func (d *Dispatcher) Start() {
 func (d *Dispatcher) dispatch() {
 	for {
 		select {
-		case job := <-d.jobQueue: // New job received.
+		case job := <-d.jobQueue.jobQueue: // New job received.
 		// Wait for idle worker and process request.
 		// Worker registeres its job channel when it becomes idle.
 			jobChannel := <-d.workerPool
@@ -243,22 +247,33 @@ func (d *Dispatcher) dispatch() {
 }
 
 func main() {
-	// Ensure starting web page passed.
-	if len(os.Args) < 2 {
-		fmt.Printf("usage: %s <root page>", os.Args[0])
+	// Set all possible program argument to default values.
+	startPage := ""
+	ofn := OutpufFileName
+	mw := MaxWorkers
+
+	// Read in program arguments and catch possible errors.
+	switch {
+	case len(os.Args) == 1:
+		fmt.Printf("usage: %s <root page> <outputfilename?> <maxworkers?>", os.Args[0])
 		os.Exit(1)
+	case len(os.Args) > 1:
+		startPage = os.Args[1]
+	case len(os.Args) > 2:
+		ofn = os.Args[2]
+	case len(os.Args) > 3:
+		mw, _ = strconv.Atoi(os.Args[3])
 	}
 
 	// Set up and start dispatcher.
-	//jobQueue := make(chan Job, MaxJobs)
-	disp := NewDispatcher(MaxWorkers, JobQueue)
-	disp.Start()
+	d := NewDispatcher(mw, CurrentJobs)
+	d.Start()
 
 	// Set up output file.
-	var err error
-	Out, err = os.Create("sitemap.txt")
-	if err != nil {
-		fmt.Println("Can't write sitemap.txt...")
+	var e error
+	Out, e = os.Create(ofn)
+	if e != nil {
+		fmt.Printf("Can't write %s...\n", ofn)
 		os.Exit(1)
 	}
 
@@ -266,13 +281,10 @@ func main() {
 	VisitedLinksLock <- true
 
 	// Push start page into the downloadLinks channel.
-	startPage := os.Args[1]
 	fmt.Println("Start page set: " + startPage)
-	JobGroup.Add(1)
-	JobQueue <- &DownloadJob{jobQueue:JobQueue, link: startPage}
+	CurrentJobs.Add(&DownloadJob{link: startPage})
 
-	// Detect when all goroutines are done.
-	// No more jobs in the queue AND no worker active AND disp waiting for jobs.
-	JobGroup.Wait()
+	// Detect when all goroutines are done, i.e. all jobs have been processed.
+	CurrentJobs.Wait()
 	fmt.Println("All finished!")
 }
