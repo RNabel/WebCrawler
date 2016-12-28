@@ -84,7 +84,6 @@ func (j *DownloadJob) Start() {
 	if err == nil {
 		CurrentJobs.Add(&LinkExtractionJob{data:response.Body, url:j.link})
 	}
-	fmt.Println("Finished DownloadJob, link: " + j.link)
 	CurrentJobs.Done()
 }
 
@@ -96,7 +95,6 @@ func (j *LinkExtractionJob) Start() {
 		switch {
 		case nextToken == html.ErrorToken:
 			// Finished with document.
-			//fmt.Println("Done with the document.")
 			cont = false
 		case nextToken == html.StartTagToken:
 			token := tokenizer.Token()
@@ -108,14 +106,11 @@ func (j *LinkExtractionJob) Start() {
 						href = handleLocalPaths(href, j.url)
 					}
 					// Check whether anchor had anchor href.
-					//fmt.Println("Sending " + href + " to be queued.")
 					CurrentJobs.Add(&QueueLinksJob{link:href})
-					//fmt.Printf("%s queued, q length: %d\n", href, len(JobQueue))
 				}
 			}
 		}
 	}
-	fmt.Println("Finished LinkExtractionJob: " + j.url)
 	CurrentJobs.Done()
 }
 
@@ -140,10 +135,8 @@ func handleLocalPaths(href string, context string) string {
 }
 
 func (j *QueueLinksJob) Start() {
-	//fmt.Println("Started QueueLinksJob")
 	<-VisitedLinksLock // Acquire lock.
 
-	//fmt.Println("queueLinks acquired lock")
 	_, found := VisitedLinks[j.link]
 	if !found && strings.HasPrefix(j.link, "http://tomblomfield.com/") {
 		// Add link to visitedLinks set.
@@ -153,12 +146,9 @@ func (j *QueueLinksJob) Start() {
 		//fmt.Printf("Before Added: %s, queue length: %d \n", j.link, len(JobQueue))
 		//fmt.Printf("QueueLinksJob, queue size: %d", len(JobQueue))
 		CurrentJobs.Add(&DownloadJob{link:j.link}) // Create new download job.
-	} else {
-		//fmt.Println("Rejected: " + currentLink)
 	}
 
 	VisitedLinksLock <- true // Release lock.
-	fmt.Println("Finished QueueLinksJob")
 	CurrentJobs.Done()
 }
 
@@ -279,9 +269,8 @@ func main() {
 
 	// Make link set lock available.
 	VisitedLinksLock <- true
-
+	fmt.Println("Crawling...")
 	// Push start page into the downloadLinks channel.
-	fmt.Println("Start page set: " + startPage)
 	CurrentJobs.Add(&DownloadJob{link: startPage})
 
 	// Detect when all goroutines are done, i.e. all jobs have been processed.
