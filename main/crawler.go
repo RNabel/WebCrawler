@@ -26,6 +26,7 @@ type JobQueue struct {
 }
 
 func NewJobQueue(maxJobs int) JobQueue {
+	fmt.Printf("Making new queue with cap = %d\n", maxJobs)
 	jq := make(chan Job, maxJobs)
 	return JobQueue{jobQueue: jq}
 }
@@ -160,13 +161,14 @@ func getAttr(token html.Token, name string) string {
 
 func processLink(href string, context string) string {
 	uMain, _ := url.Parse(href)
+	if uMain == nil {
+		return context // Not exactly elegant, but allows the program to run successfully.
+	}
+
 	// Check if local path.
 	uBase, _ := url.Parse(context)
 	uMain = uBase.ResolveReference(uMain)
 
-	if uMain == nil {
-		return context // Not exactly elegant, but allows the program to run successfully.
-	}
 
 	// Strip fragments.
 	uMain.Fragment = ""
