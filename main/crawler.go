@@ -10,7 +10,6 @@ import (
 	"os"
 	"net/http"
 	"golang.org/x/net/html"
-	"strings"
 	"net/url"
 	"io"
 	"sync"
@@ -79,7 +78,7 @@ type DownloadJob struct {
 }
 
 type LinkExtractionJob struct {
-	data io.Reader
+	data io.ReadCloser
 	url  string
 }
 
@@ -144,7 +143,7 @@ func (j *LinkExtractionJob) Start() {
 
 	// Add all details to the output file.
 	writeDetails(j.url, links, assets)
-
+	j.data.Close()
 	currentJobs.Done()
 }
 
@@ -161,10 +160,12 @@ func getAttr(token html.Token, name string) string {
 
 func processLink(href string, context string) string {
 	uMain, _ := url.Parse(href)
-	if !strings.HasPrefix(href, "http") {
-		// Check if local path.
-		uBase, _ := url.Parse(context)
-		uMain = uBase.ResolveReference(uMain)
+	// Check if local path.
+	uBase, _ := url.Parse(context)
+	uMain = uBase.ResolveReference(uMain)
+
+	if uMain == nil {
+		return context // Not exactly elegant, but allows the program to run successfully.
 	}
 
 	// Strip fragments.
