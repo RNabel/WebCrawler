@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"encoding/json"
 	"log"
+	"time"
 )
 
 // JobQueue wraps a channel with a sync.WaitGroup, which allows the main thread to wait until all
@@ -26,7 +27,6 @@ type JobQueue struct {
 }
 
 func NewJobQueue(maxJobs int) JobQueue {
-	fmt.Printf("Making new queue with cap = %d\n", maxJobs)
 	jq := make(chan Job, maxJobs)
 	return JobQueue{jobQueue: jq}
 }
@@ -66,6 +66,8 @@ var (
 	Domain string
 	crawledPages = 1
 	totalPages = 1
+
+	startTime = time.Now()
 )
 
 // JOB DEFINITIONS.
@@ -218,8 +220,13 @@ func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 	}
 	outputLock <- true // Release lock.
 
-	fmt.Printf("\r%d / %d crawled. job queue length: %d", crawledPages, totalPages,
-		len(currentJobs.jobQueue))
+	// Calculate current crawl speed.
+	timeDiff := time.Now().Sub(startTime)
+	diffInS := timeDiff.Seconds()
+	speed := float64(crawledPages) / diffInS
+
+	fmt.Printf("\r%d / %d crawled. job queue length: %d, speed: %f pages/s ", crawledPages, totalPages,
+		len(currentJobs.jobQueue), speed)
 	crawledPages++
 }
 
@@ -375,5 +382,5 @@ func main() {
 
 	// Detect when all goroutines are done, i.e. all jobs have been processed.
 	currentJobs.Wait()
-	fmt.Println("Done!")
+	fmt.Println("\nDone!")
 }
