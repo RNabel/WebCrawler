@@ -19,6 +19,30 @@ import (
 	"time"
 )
 
+// GLOBAL VARS.
+// ============
+var (
+	// Set up visited sites map and lock.
+	visitedLinks = make(map[string]bool)
+	visitedLinksLock = make(chan bool, 1)
+
+	// Setting defaults.
+	MaxWorkers = 10
+	MaxJobs = 10000
+	OutpufFileName = "sitemap.txt"
+
+	currentJobs JobQueue
+
+	output *json.Encoder
+	outputLock = make(chan bool, 1)
+
+	Domain string
+	crawledPages = 1
+	totalPages = 1
+
+	startTime = time.Now()
+)
+
 // JobQueue wraps a channel with a sync.WaitGroup, which allows the main thread to wait until all
 // 	jobs have been processed, even if total numer of jobs is not known.
 type JobQueue struct {
@@ -46,61 +70,37 @@ func (jq *JobQueue) Wait() {
 	jq.jobGroup.Wait()
 }
 
-// GLOBAL VARS.
-// ============
-var (
-	// Set up visited sites map and lock.
-	visitedLinks = make(map[string]bool)
-	visitedLinksLock = make(chan bool, 1)
-
-	// Setting defaults.
-	MaxWorkers = 10
-	MaxJobs = 10000
-	OutpufFileName = "sitemap.txt"
-
-	currentJobs JobQueue
-
-	output *json.Encoder
-	outputLock = make(chan bool, 1)
-
-	Domain string
-	crawledPages = 1
-	totalPages = 1
-
-	startTime = time.Now()
-)
-
 // JOB DEFINITIONS.
 // ================
 type Job interface {
 	Start()
 }
 
+// - DOWNLOAD
+//   ========
 type DownloadJob struct {
-	link string
-}
-
-type LinkExtractionJob struct {
-	data io.ReadCloser
-	url  string
-}
-
-type QueueLinksJob struct {
-	link string
+	Link string
 }
 
 func (j *DownloadJob) Start() {
 	// Download page and add output to outChan.
 	//fmt.Printf("Downloading: %s\n", link)
-	response, err := http.Get(j.link)
+	response, err := http.Get(j.Link)
 	if err == nil {
-		currentJobs.Add(&LinkExtractionJob{data:response.Body, url:j.link})
+		currentJobs.Add(&LinkExtractionJob{Data:response.Body, Url:j.Link})
 	}
 	currentJobs.Done()
 }
 
+// - LINK EXTRACTION
+//   ===============
+type LinkExtractionJob struct {
+	Data io.ReadCloser
+	Url  string
+}
+
 func (j *LinkExtractionJob) Start() {
-	tokenizer := html.NewTokenizer(j.data)
+	tokenizer := html.NewTokenizer(j.Data)
 	cont := true
 
 	links := make(map[string]bool)
@@ -132,10 +132,10 @@ func (j *LinkExtractionJob) Start() {
 			}
 
 			if link != "" {
-				link = processLink(link, j.url)
+				link = processLink(link, j.Url)
 
 				if isLink {
-					currentJobs.Add(&QueueLinksJob{link:link})
+					currentJobs.Add(&QueueLinksJob{Link:link})
 					links[link] = true
 				} else {
 					assets[link] = true
@@ -145,8 +145,8 @@ func (j *LinkExtractionJob) Start() {
 	}
 
 	// Add all details to the output file.
-	writeDetails(j.url, links, assets)
-	j.data.Close()
+	writeDetails(j.Url, links, assets)
+	j.Data.Close()
 	currentJobs.Done()
 }
 
@@ -161,6 +161,7 @@ func getAttr(token html.Token, name string) string {
 	return ""
 }
 
+// processLink resolves local paths and strips the URL of fragments and queries.
 func processLink(href string, context string) string {
 	uMain, _ := url.Parse(href)
 	if uMain == nil {
@@ -181,24 +182,6 @@ func processLink(href string, context string) string {
 	return uMain.String()
 }
 
-func (j *QueueLinksJob) Start() {
-	<-visitedLinksLock // Acquire lock.
-
-	_, found := visitedLinks[j.link]
-
-	u, _ := url.Parse(j.link)
-
-	if !found && u.Host == Domain {
-		// Add link to visitedLinks set.
-		visitedLinks[j.link] = true
-		totalPages++ // Increase counter for total number of pages to be crawled.
-
-		currentJobs.Add(&DownloadJob{link:j.link}) // Create new download job.
-	}
-
-	visitedLinksLock <- true // Release lock.
-	currentJobs.Done()
-}
 
 type PageRecord struct {
 	Link   string
@@ -206,6 +189,7 @@ type PageRecord struct {
 	Assets []string
 }
 
+// writeDetails creates struct of all information of a crawled page and writes it to the output file.
 func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 	l := setToArr(links)
 	a := setToArr(assets)
@@ -230,6 +214,7 @@ func writeDetails(link string, links map[string]bool, assets map[string]bool) {
 	crawledPages++
 }
 
+// setToArr converts a map's keys to a string array.
 func setToArr(set map[string]bool) []string {
 	l := make([]string, len(set))
 	i := 0
@@ -240,12 +225,37 @@ func setToArr(set map[string]bool) []string {
 	return l
 }
 
+// - LINK FILTERING
+//   ==============
+type QueueLinksJob struct {
+	Link string
+}
+
+func (j *QueueLinksJob) Start() {
+	<-visitedLinksLock // Acquire lock.
+
+	_, found := visitedLinks[j.Link]
+
+	u, _ := url.Parse(j.Link)
+
+	if !found && u.Host == Domain {
+		// Add link to visitedLinks set.
+		visitedLinks[j.Link] = true
+		totalPages++ // Increase counter for total number of pages to be crawled.
+
+		currentJobs.Add(&DownloadJob{Link:j.Link}) // Create new download job.
+	}
+
+	visitedLinksLock <- true // Release lock.
+	currentJobs.Done()
+}
+
 // WORKER.
 // =======
 type Worker struct {
-	pool   chan chan Job
-	myJobs chan Job
-	quit   chan bool
+	pool   chan chan Job // Owned by the Dispatcher, needed to indicate being idle.
+	myJobs chan Job      // Used by Dispatcher to pass jobs which need to be processed.
+	quit   chan bool     // Used to indicate to the worker to stop.
 }
 
 func NewWorker(workerPool chan chan Job) Worker {
@@ -285,7 +295,7 @@ func (w *Worker) Stop() {
 // DISPATCHER.
 // ===========
 type Dispatcher struct {
-	jobQueue   JobQueue
+	jobQueue   JobQueue // Used by Jobs to specify follow-up jobs.
 	workerPool chan chan Job
 	numWorkers int
 }
@@ -335,7 +345,7 @@ func main() {
 	// Read in program arguments and catch possible errors.
 	switch {
 	case len(os.Args) == 1:
-		fmt.Printf("usage: %s <root page> <outputfilename?> <maxworkers?> <maxjobs?>", os.Args[0])
+		fmt.Printf("usage: %s <root page> <outputfilename?> <maxworkers?> <maxjobs?>\n", os.Args[0])
 		os.Exit(1)
 	case len(os.Args) > 4:
 		mj, _ = strconv.Atoi(os.Args[4])
@@ -372,13 +382,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Make link set lock and output lock available.
+	// Make locks available.
 	visitedLinksLock <- true
 	outputLock <- true
 
 	fmt.Println("Crawling...")
 	// Push start page into the downloadLinks channel.
-	currentJobs.Add(&DownloadJob{link: startPage})
+	currentJobs.Add(&DownloadJob{Link: startPage})
 
 	// Detect when all goroutines are done, i.e. all jobs have been processed.
 	currentJobs.Wait()

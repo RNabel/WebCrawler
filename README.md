@@ -1,12 +1,12 @@
 This web crawler is intended to be a fast and simple starting point for an incremental or continuous web crawler.
 
 # Running instructions
-The program is written in golang, it can be run like so:
+The program is written in golang, it can be run like so (from `main` directory):
 ```bash
 go run crawler.go <start-page> <output-file-name?> <max-workers?> <max-jobs?>
 
 e.g.
-go run crawler.go http://tomblomfield.com/
+cd main && go run crawler.go http://tomblomfield.com/
 ```
 
 - `start-page` is the starting point for the crawler, and defines which domain to limit crawling to. *Note:* `start-page` has to include a scheme e.g.: `http://tomblomfield.com`
@@ -15,8 +15,17 @@ go run crawler.go http://tomblomfield.com/
 - `max-jobs` (optional, default=10k) The maximum number of jobs to store until new job requests are ignored.
 
 **IMPORTANT:** 
-- If `max-workers` is >40 the program can crash due to to0 many open connections
+- If `max-workers` is >40 the program can crash due to too many open connections
 - A low value (<1000) of `max-jobs` on a badly connected webpage can result in many parts of the page not being crawled 
+
+## Running tests
+Tests are provided in `crawler_test.go` and can be run using:
+```bash
+go test
+
+i.e.
+cd main; go test; cd ..
+```
 
 # Output
 ## File output
@@ -101,9 +110,11 @@ The program terminates when the number of jobs added to `currentJobs` equals tha
 (see end of each `Job.Start()` function).
 
 ## Things that could be improved
-- Use probabalistic set rather than normal set (Bloom filter or HyperLogLog)
-- Distribute file writes / use database for details
-- Make program multi-machine
+- Use disk-backed data structure to queue jobs
+- Extend test coverage
+- Use probabilistic set rather than normal set (Bloom filter or HyperLogLog)
+- Distribute output file writes / use database for details
+- Make program run on multiple machines
 
 ## Some academic inspiration
 - Heydon et al. 1999: [Mercator: A scalable, extensible Web crawler][1]
